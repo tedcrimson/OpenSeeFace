@@ -6,3 +6,5 @@ Samples/*
 *.7z
 CSharp/*
 VSeeFace/*
+dist
+build

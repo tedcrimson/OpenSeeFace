@@ -47,6 +47,7 @@ parser.add_argument("--face-id-offset", type=int, help="When set, this offset is
 parser.add_argument("--repeat-video", type=int, help="When set to 1 and a video file was specified with -c, the tracker will loop the video until interrupted", default=0)
 parser.add_argument("--dump-points", type=str, help="When set to a filename, the current face 3D points are made symmetric and dumped to the given file when quitting the visualization with the \"q\" key", default="")
 parser.add_argument("--benchmark", type=int, help="When set to 1, the different tracking models are benchmarked, starting with the best and ending with the fastest and with gaze tracking disabled for models with negative IDs", default=0)
+parser.add_argument("--frame-data", type=int, help="When set to 1, the server is sending webcam frame data", default=0)
 if os.name == 'nt':
     parser.add_argument("--use-dshowcapture", type=int, help="When set to 1, libdshowcapture will be used for video input instead of OpenCV", default=1)
     parser.add_argument("--blackmagic-options", type=str, help="When set, this additional option string is passed to the blackmagic capture library", default=None)
@@ -122,6 +123,8 @@ if os.name == 'nt' and (args.list_cameras > 0 or not args.list_dcaps is None):
     cap.destroy_capture()
     sys.exit(0)
 
+import math
+import pickle
 import numpy as np
 import time
 import cv2
@@ -146,6 +149,8 @@ if args.benchmark > 0:
             total += time.perf_counter() - start
         print(1. / (total / 100.))
     sys.exit(0)
+
+max_length = 65000
 
 target_ip = args.ip
 target_port = args.port
@@ -364,8 +369,43 @@ try:
                     log.write("\r\n")
                     log.flush()
 
+
             if detected and len(faces) < 40:
                 sock.sendto(packet, (target_ip, target_port))
+
+            if args.frame_data == 1:
+                retval, buffer = cv2.imencode(".jpg", frame)
+                if retval:
+                    # convert to byte array
+                    buffer = buffer.tobytes()
+                    # get size of the frame
+                    buffer_size = len(buffer)
+
+                    num_of_packs = 1
+                    if buffer_size > max_length:
+                        num_of_packs = math.ceil(buffer_size/max_length)
+
+                    # frame_info = {"packs":num_of_packs}
+                    frame_info = bytearray(struct.pack("i", num_of_packs))
+
+                    # send the number of packs to be expected
+                    # print("Number of packs:", num_of_packs)
+                    sock.sendto(frame_info, (target_ip, target_port))
+                    
+                    left = 0
+                    right = max_length
+
+                    for i in range(num_of_packs):
+                        # print("left:", left)
+                        # print("right:", right)
+
+                        # truncate data to send
+                        data = buffer[left:right]
+                        left = right
+                        right += max_length
+
+                        # send the frames accordingly
+                        sock.sendto(data, (target_ip, target_port))
 
             if not out is None:
                 video_frame = frame
@@ -375,7 +415,7 @@ try:
                 if args.video_scale != 1:
                     del video_frame
 
-            if args.visualize != 0:
+            if args.visualize != 0 and args.frame_data == 0:
                 cv2.imshow('OpenSeeFace Visualization', frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     if args.dump_points != "" and not faces is None and len(faces) > 0:
